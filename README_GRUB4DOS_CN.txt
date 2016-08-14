@@ -8,38 +8,36 @@
 注:本文仅供参考,可能有一些更新没有在这里说明.如果有发现错误可以到论坛发贴或email联系我(grub4dos@chenall.net)
 
 其它命令用法请参考
-	http://grub4dos.sourceforge.net/wiki/ 处的 GRUB4DOS 有关文档。
+	http://chenall.net 或 http://grub4dos.chenall.net 处的 GRUB4DOS 有关文档。
 
 外部命令的用法请参考
 	http://chenall.net/post/tag/grub4dos/
 
 项目主页 
-	http://code.google.com/p/grub4dos-chenall/
+	https://github.com/chenall/grub4dos
 
 下载网址:
-	http://code.google.com/p/grub4dos-chenall/downloads/list
-	http://nufans.net/grub4dos/
+	http://grub4dos.chenall.net
 
 工具和外部命令:
 	http://code.google.com/p/grubutils/downloads/list
 
-通过匿名 svn 服务器获取最新源代码的方法：
+获取最新源代码的方法：
 
-	svn co http://grub4dos-chenall.googlecode.com/svn/trunk/ grub4dos
+	git clone git://github.com/chenall/grub4dos.git
+或
+	svn co https://github.com/chenall/grub4dos grub4dos-src
 
 通过你的 web 浏览器在线查看源代码：
-	http://code.google.com/p/grub4dos-chenall/source/browse/
+	https://github.com/chenall/grub4dos
 
-GRUB4DOS 邮件列表(未用)：
-	grub4dos-devel@gna.org
-
-订阅页面：
-	https://mail.gna.org/listinfo/grub4dos-devel/
 
 论坛（官方技术支持站点）：
+	中文:
+	http://bbs.wuyou.com/forumdisplay.php?fid=60
 	http://bbs.znpc.net/forumdisplay.php?fid=4
+	英文:
 	http://reboot.pro/forum/66/
-
 ******************************************************************************
 ***                                GCC 黑名单                              ***
 ******************************************************************************
@@ -4375,3 +4373,29 @@ http://chenall.net/post/tag/grub4dos/
 	3.[]是必须的，不可少。
 	4.如果[]里面的内容为空相当于title即不判断。
 	5.你可以使用该功能来快速注释整个菜单的内容（不显示菜单），只需要使用一个非法的命令即可。
+
+*************************************************************************************
+*                      批处理调试功能                                               *
+*************************************************************************************
+
+用法
+debug PROG ARG
+
+在调试模式下会进入单步模式,在每一行命令前等待用户按键有以下功能可以使用
+
+Q->退出程序
+C->进入命令行
+S->跳过当前行
+B->设置断点
+E->停用调试,运行到程序结束或断点行.
+N->运行到下一个函数的第一行
+
+其它键直接执行当前行.
+
+B->设置断点.可以使用的格式如下:
+
+[*|+|-]INTEGER
+
+默认情况下这个数值是一个绝对的行号.
+前导`*`     后面的数值是一个内存地址.程序会先读取该处内存的值,执行的时候判断该内存的值是否有变化,有变化就中断.
+前导`+`/`-` 后面的数值是一个相对行号.

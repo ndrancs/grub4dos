@@ -58,6 +58,8 @@ ENTRY(main)
 
 	.code16
 
+	/* If BP=0x07C0, it indicates boot from pxe or no-emulation cdrom */
+
 	/*
 	 *  Guarantee that "main" is loaded at 0x0:0x8200 in stage2 and
 	 *  at 0x0:0x2200 in stage1.5.
@@ -119,7 +121,7 @@ VARIABLE(version_string)
 	.string VERSION
 
 VARIABLE(config_file)
-	.string "/boot/grub/menu.lst"
+	.string "/menu.lst"
 
 	. = EXT_C(main) + 0x34
 
@@ -349,6 +351,15 @@ real_codestart:
 
 	sti		/* added 2008-08-04 */
 
+	/* save DX at 0x8206, overwriting the unused version numbers. */
+	movw	%dx, ABS(EXT_C(install_partition)) - 2
+
+	# it is time to do this after DX has been saved.
+	pushal
+	movw	$0x0003, %ax	/* set display mode: 80*25 color text */
+	int	$0x10		# this might destroy our DX
+	popal
+
 	/* check for fb structure  */
 	cmpl	$0x46424246, (0x21b4)
 	jnz	1f
@@ -373,6 +384,8 @@ real_codestart:
 	movb	%al, ABS(EXT_C(harddrives_orig))
 
 	//movb	$((int13_handler_end - int13_handler + 0x3ff) / 0x400), ABS(int13_handler)
+
+	movb	$1, %cl		// CX != 0, indicating our int13 handler not present
 
 	movl	0x54, %eax
 	movl	%eax, ABS(EXT_C(ROM_int15))
@@ -430,9 +443,35 @@ real_codestart:
 	movw	$ABS(EXT_C(bios_drive_map)), %di		/* ES=0 */
 	cs repz movsw
 
+	/* Now CX = 0, indicating our int13 handler is present. */
 2:
 	xorw	%ax, %ax
 	movw	%ax, %ds			/* DS=0 */
+1:
+	jcxz	1f	/* our int13 handler is present, skip */
+	/* clear highest 2 bits of byte at 0x410. */
+	andb	$0x3F, 0x0410	/* clear bit 6-7 */
+	cmpw	$0x07C0, %bp	/* boot from pxe or cdrom? */
+	je	3f		/* yes, directly mask off floppy. */
+	/* check fbinst boot */
+	movl	ABS(EXT_C(fb_status)), %ecx
+	jecxz	2f	/* did not boot by fbinst, continue */
+	cmpb	$0, %ch		/* fbinst boot drive is floppy? */
+	jz	1f		/* yes, skip */
+2:
+	/* check DOS boot of grub.exe */
+	movl	ABS(EXT_C(dos_drive_geometry)), %ecx
+	jecxz	2f	/* did not boot off DOS, continue */
+	cmpb	$0, %cl		/* DOS boot drive is floppy? */
+	jz	1f		/* yes, skip */
+2:
+	/* check saved DX register */
+	movw	ABS(EXT_C(install_partition)) - 2, %cx
+	cmpb	$0, %cl		/* BIOS boot drive is floppy? */
+	jz	1f		/* yes, skip */
+3:
+	/* did not boot from floppy. clear lowest bit of byte at 0x410. */
+	andb	$0xFE, 0x0410	/* clear bit 0 */
 1:
 	/* check the BIOS type (currently only for Bochs) */
 	movw	$0xF000, %ax
@@ -445,7 +484,7 @@ real_codestart:
 	xorw	%ax, %ax
 	movw	%ax, %es			/* ES=0 */
 
-	pushw	%dx		/* DL=boot drive */
+//	pushw	%dx		/* DL=boot drive */
 
 	xorw	%ax, %ax
 	movw	%ax, %ds
@@ -493,9 +532,14 @@ real_codestart:
 
 	cmpw	$KEY_IC, %ax	/* insert char */
 	jne	3f
-	movb	$1, %bh		/* DEBUG_KEY pressed */
+	orb	$1, %bh		/* DEBUG_KEY pressed */
+	jmp	2b		/* get next key */
 3:
 	orb	$0x20, %al
+	cmpb	$0x73, %al	/* is "S"? */
+	jne	3f
+	orb	$2, %bh		/* Single Sector for Buggy BIOS */
+3:
 	cmpb	$0x63, %al	/* is "C"? */
 	jne	2b		/* no, get next key */
 
@@ -528,10 +572,10 @@ real_codestart:
 	jnz	1f
 	movl	$0, ABS(EXT_C(use_config_file))
 1:
-	popw	%dx		/* DL=boot drive */
+//	popw	%dx		/* DL=boot drive */
 
-	movzbl	%dl, %eax
-	movl	%eax, ABS(EXT_C(boot_drive))
+//	movzbl	%dl, %eax
+//	movl	%eax, ABS(EXT_C(boot_drive))
 
 	xorw	%ax, %ax
 	movw	%ax, %ds
@@ -14131,7 +14175,7 @@ VARIABLE(grub_putchar)
 	.long 0				//reserved
 	.long	ABS(EXT_C(getkey))	/* getchar */
 	.long	ABS(EXT_C(checkkey))
-	.long 0				//reserved
+	.long	ABS(EXT_C(pxe_call))	//reserved  21
 	.long	ABS(EXT_C(grub_memcmp))
 	.long	ABS(EXT_C(grub_memmove))
 	.long	ABS(EXT_C(grub_memset))
@@ -14141,7 +14185,8 @@ VARIABLE(grub_putchar)
 	.long	ABS(EXT_C(grub_close))
 	.long 0				//reserved
 	.long 0				//reserved
-	.long 0				//reserved
+  VARIABLE(disk_read_hook)
+	.long 0//reserved
 	.long	ABS(EXT_C(devread))
 	.long	ABS(EXT_C(devwrite))
 	.long	ABS(EXT_C(next_partition))

@@ -1,3 +1,12 @@
+2015-01-10 New Batch script debugging features.
+2014-12-15 (tinybit) get rid of endless loop due to wrong usage of pxe detect.
+2014-11-19 (tinybit) fix a bug that erroneously hooked/unhooked non-fb drives.
+2014-11-10 supported initrdfs.
+2014-11-03 (tinybit) mask off non-booting floppy drives in order to gain more stability.
+2014-11-02 (tinybit) fix offset nestification problem for virtual drives built on another in-situ virtual drive.
+2014-10-25 disabled warning and errinfo message redirect.
+2014-10-17 PXE Boot supported proxyDHCP and gateway.
+2014-10-10 (tinybit) two variables boot_drive and install_partition can be preset to a value before transferring control to grub4dos.
 2014-09-08 (tinybit) supported backslash-delimited pathname used by pxe server.
 2014-09-04 fixed a bug in dir();(reported by Steve6375,issue 154).
 2014-09-04 add new command 'raw'.

@@ -31,7 +31,7 @@ unsigned long long
 block_read_func (unsigned long long buf, unsigned long long len, unsigned long write);
 
 /* instrumentation variables */
-void (*disk_read_hook) (unsigned long long, unsigned long, unsigned long) = NULL;
+//void (*disk_read_hook) (unsigned long long, unsigned long, unsigned long) = NULL;
 void (*disk_read_func) (unsigned long long, unsigned long, unsigned long) = NULL;
 
 /* Forward declarations.  */
@@ -79,6 +79,8 @@ static int do_completion;
 static int set_filename(char *filename);
 int dir (char *dirname);
 static int sane_partition (void);
+unsigned long long md_part_size;
+unsigned long long md_part_base;
 
 /* XX used for device completion in 'set_device' and 'print_completions' */
 static int incomplete, disk_choice;
@@ -166,6 +168,9 @@ struct fsys_entry fsys_table[NUM_FSYS + 1] =
      on floppies from track 1 to 2, while others only use 1.  */
 # ifdef FSYS_FFS
   {"ffs", ffs_mount, ffs_read, ffs_dir, 0, ffs_embed},
+# endif
+# ifdef FSYS_INITRD
+  {"initrdfs", initrdfs_mount, initrdfs_read, initrdfs_dir, initrdfs_close, 0},
 # endif
   {0, 0, 0, 0, 0, 0}
 };
@@ -262,7 +267,7 @@ rawdisk_read (unsigned long drive, unsigned long long sector, unsigned long nsec
     // Compare with previous read data
     if (plast[0] != BADDATA1) 
     {   // Read data changed, error.
-	grub_printf("\nFatal! Inconsistent data read from (0x%X)%ld+%d\n",drive,sector,nsec);
+	printf_errinfo("\nFatal! Inconsistent data read from (0x%X)%ld+%d\n",drive,sector,nsec);
 	return -1; // error
     }
     return 0; // success
@@ -1376,7 +1381,19 @@ set_device (char *device)
 	      if (ch == 'c' && cdrom_drive != GRUB_INVALID_DRIVE && *device == ')')
 		current_drive = cdrom_drive;
 	      else if (ch == 'm')
+	      {
 		current_drive = 0xffff;
+		md_part_base = md_part_size = 0LL;
+		if (*device == ',')
+		{
+			++device;
+			if (!safe_parse_maxint (&device, &md_part_base) || *device++ != ',' || !safe_parse_maxint (&device, &md_part_size))
+			{
+				errnum = ERR_DEV_FORMAT;
+				return 0;
+			}
+		}
+		}
 	      else if (ch == 'r')
 		current_drive = ram_drive;
           else if (ch == 'b')
@@ -1436,15 +1453,14 @@ set_device (char *device)
 	  part_choice ++;
 	  device++;
 
+	  if (current_drive == FB_DRIVE && fb_status)
+	    current_drive = (unsigned char)(fb_status >> 8);
 	  if (*device >= '0' && *device <= '9')
 	    {
 	      unsigned long long ull;
 	      part_choice ++;
-	      current_partition = 0;
 
-	      if (/*!(current_drive & 0x80)
-		  ||*/ !safe_parse_maxint (&device, &ull)
-		  || current_partition > 254)
+	      if (!safe_parse_maxint (&device, &ull))
 		{
 		  errnum = ERR_DEV_FORMAT;
 		  return 0;
@@ -1571,6 +1587,7 @@ static int set_filename(char *filename)
 int
 dir (char *dirname)
 {
+  int ret;
 #ifndef NO_DECOMPRESSION
   compressed_file = 0;
 #endif /* NO_DECOMPRESSION */
@@ -1590,7 +1607,9 @@ dir (char *dirname)
   /* set "dir" function to list completions */
   print_possibilities = 1;
 
-  return (*(fsys_table[fsys_type].dir_func)) (open_filename);
+  ret = (*(fsys_table[fsys_type].dir_func)) (open_filename);
+  if (!ret && !errnum) errnum = ERR_FILE_NOT_FOUND;
+  return ret;
 }
 
 
@@ -1890,6 +1909,7 @@ print_completions (int is_filename, int is_completion)
 
 #ifndef NO_BLOCK_FILES
 static int block_file = 0;
+static unsigned char blk_sector_bit = 0;
 
 struct BLK_LIST_ENTRY {
     unsigned long long start, length;
@@ -2009,18 +2029,37 @@ block_file:
 	  blk_buf.cur_blklist = blk_buf.blklist;
 	  blk_buf.cur_blknum = 0;
 
-	  //if (current_drive == ram_drive && filemax == 512/* &&  filemax < rd_size*/ && (*(long *)(FSYS_BUF + 12)) == 0)
-	  if (current_drive == ram_drive && filemax == 512/* &&  filemax < rd_size*/ && (blk_buf.blklist[0].start) == 0)
+	  blk_sector_bit = 9;
+	  while((buf_geom.sector_size >> blk_sector_bit) > 1) ++blk_sector_bit;
+	//  if ((1<<blk_sector_bit) != buf_geom.sector_size) blk_sector_bit = 0;
+
+	  unsigned long long mem_drive_size = 0;
+	  if (current_drive == ram_drive)
 	  {
-		filemax = rd_size;
-		// *(long *)(FSYS_BUF + 16) = (filemax + 0x1FF) >> 9;
-		blk_buf.blklist[0].length = (filemax + 0x1FF) >> 9;
+		mem_drive_size = rd_size;
+		goto check_ram_drive_size;
+	  }
+	  else if (current_drive == 0xffff)
+	  {
+		if (!md_part_base && !(blk_buf.blklist[0].start))
+			return 1;
+		mem_drive_size = md_part_size;
+		if (md_part_base)
+		{
+	check_ram_drive_size:
+			if (filemax == 512 && (blk_buf.blklist[0].start) == 0)
+			{
+				filemax = mem_drive_size;
+				blk_buf.blklist[0].length = (filemax + 0x1FF) >> 9;
+			} else if (filemax > mem_drive_size)
+				filemax = mem_drive_size;
+		}
 	  }
 #ifdef NO_DECOMPRESSION
 	  return 1;
 #else
 	  //return (current_drive == 0xffff && ! *((unsigned long*)(FSYS_BUF + 12)) ) ? 1 : gunzip_test_header ();
-	  return (current_drive == 0xffff && !(blk_buf.blklist[0].start) ) ? 1 : gunzip_test_header ();
+	  return gunzip_test_header ();
 #endif
 //	}
 #endif /* block files */
@@ -2060,11 +2099,11 @@ block_file:
 unsigned long long
 block_read_func (unsigned long long buf, unsigned long long len, unsigned long write)
 {
-          unsigned long long ret = 0;
-      unsigned long size;
-      unsigned long off;
+	unsigned long long ret = 0;
+	unsigned long size;
+	unsigned long off;
 
-      while (len && !errnum)
+	while (len && !errnum)
 	{
 	  /* we may need to look for the right block in the list(s) */
 	  //if (filepos < (*((unsigned long*)FSYS_BUF)) /* BLK_CUR_FILEPOS */)
@@ -2078,31 +2117,30 @@ block_read_func (unsigned long long buf, unsigned long long len, unsigned long w
 	      blk_buf.cur_blknum = 0;
 	    }
 
-	  /* run BLK_CUR_FILEPOS up to filepos */
-	  //while (filepos > (*((unsigned long*)FSYS_BUF)))
-	  while (filepos > blk_buf.cur_filepos)
+	     if (filepos > blk_buf.cur_filepos)
 	    {
-	      //if ((filepos - ((*((unsigned long*)FSYS_BUF)) & ~(buf_geom.sector_size - 1)))
-	      //  >= buf_geom.sector_size)
-	      if ( (filepos - (blk_buf.cur_filepos & (-(unsigned long long)buf_geom.sector_size)))
-		  >= buf_geom.sector_size )
-		{
-		  //(*((unsigned long*)FSYS_BUF)) += buf_geom.sector_size;
-		  blk_buf.cur_filepos += buf_geom.sector_size;
-		  //(*((unsigned long*)(FSYS_BUF+8)))++;
-		  blk_buf.cur_blknum++;
+		unsigned long long i;
+		unsigned long long tmp;
 
-		  //if ((*((unsigned long*)(FSYS_BUF+8))) >= *((unsigned long*) ((*((unsigned long*)(FSYS_BUF+4))) + 4)) )
-		  if (blk_buf.cur_blknum >= blk_buf.cur_blklist->length )
-		    {
-		      //(*((unsigned long*)(FSYS_BUF+4))) += 8;	/* BLK_CUR_BLKLIST */
-		      blk_buf.cur_blklist++;
-		      //(*((unsigned long*)(FSYS_BUF+8))) = 0;	/* BLK_CUR_BLKNUM */
-		      blk_buf.cur_blknum = 0;
-		    }
+		tmp = filepos - (blk_buf.cur_filepos & -(unsigned long long)buf_geom.sector_size);
+		tmp >>= blk_sector_bit;
+
+		while(tmp)
+		{
+			i = blk_buf.cur_blklist->length - blk_buf.cur_blknum;
+			if (i > tmp)
+			{
+				blk_buf.cur_blknum += tmp;
+				break;
+			}
+			else
+			{
+				tmp -= i;
+				blk_buf.cur_blklist++;
+				blk_buf.cur_blknum = 0;
+			}
 		}
-	      else
-		//(*((unsigned long*)FSYS_BUF)) = filepos;
+
 		blk_buf.cur_filepos = filepos;
 	    }
 

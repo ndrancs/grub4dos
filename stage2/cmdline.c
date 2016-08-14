@@ -156,15 +156,26 @@ find_command (char *command)
 #define OPT_MULTI_CMD_AND	(1<<5)
 #define OPT_MULTI_CMD_OR_FLAG  	0x3B7C
 #define OPT_MULTI_CMD_OR	(1<<6)
+static char *get_next_arg(char *arg)
+{
+	while(*arg && !isspace(*arg))
+	{
+		if (*arg == QUOTE_CHAR) while (*++arg && *arg != QUOTE_CHAR);
+		if (*arg == '\\') ++arg;
+		if (*arg) ++arg;
+	}
+	while (isspace(*arg)) ++arg;
+	return arg;
+}
+
 static char *skip_to_next_cmd (char *cmd,int *status,int flags)
 {
 //	*status = 0;
 	if (cmd == NULL || *cmd == 0)
 		return NULL;
-	while (*(cmd = skip_to (0, cmd)))
+
+	while (*(cmd = get_next_arg(cmd)))
 	{
-		if (cmd[0] == cmd[1] && cmd[2] != 0x20)
-			continue;
 		switch (*(unsigned short *)cmd)
 		{
 			case 0x2626://	operator AND "&&"
@@ -198,13 +209,16 @@ static char *skip_to_next_cmd (char *cmd,int *status,int flags)
 			default:
 				continue;
 		}
-		if (flags == 0 || (*status & flags))
+
+		char *p = cmd + 1;
+
+		if ((flags == 0 || (*status & flags)) && (!*p || *p == ' ' || p[1] == ' '))
 		{
 			*(cmd - 1) = '\0';
-			cmd = skip_to (0, cmd);
+			cmd = get_next_arg(cmd);
 			break;
 		}
-		*status = 0;
+//		*status = 0;
 	}
 
 	if (*cmd == '\0')
@@ -258,13 +272,24 @@ int run_line (char *heap,int flags)
    int status = 0;
    int ret = 0;
    int arg_len = strlen(heap) + 1;
-   cmd_buffer += (arg_len + 0x10) & -0x10;
+   cmd_buffer += (arg_len + 0xf) & -0x10;
    memmove(cmdline_buf,heap,arg_len);
    heap = cmdline_buf;
+   __asm__ __volatile__ ("movl %%esp,%0" ::"m"(arg_len):"memory");
+   if (arg_len < 0x3000)
+   {
+     errnum = ERR_BAD_ARGUMENT;
+     printf("\nFAULT: <<<<<<<<<<SYSTETM STATCK RUNOUT>>>>>>>>>\n");
+     return 0;
+   }
+
+   if (debug > 10) printf("SP:0x%X\n[%s]\n",arg_len,heap);
+
    while(*heap && (arg = heap))
    {
       heap = skip_to_next_cmd(heap,&status,OPT_MULTI_CMD_AND | OPT_MULTI_CMD_OR | OPT_MULTI_CMD);//next cmd
       ret = run_cmd_line(arg,flags);
+      if (errnum > 1000) break;
       if (((status & OPT_MULTI_CMD_AND) && !ret) || ((status & OPT_MULTI_CMD_OR) && ret))
       {
 	 errnum = ERR_NONE;
@@ -361,7 +386,7 @@ static int run_cmd_line (char *heap,int flags)
 		}
 
 		if (debug > 10)
-			printf("r0:[%s]\n",arg);
+			printf("r0:[0x%X]:[%s]\n",arg,arg);
 
 		if (status & 8)
 		{
@@ -391,6 +416,7 @@ static int run_cmd_line (char *heap,int flags)
 				#endif
 				ret = (builtin->func) (skip_to (1,arg), flags);
 				#ifndef NO_DECOMPRESSION
+				if (builtin->flags & BUILTIN_NO_DECOMPRESSION)
 					no_decompression = no_decompression_bak;
 				#endif
 			}
@@ -421,7 +447,7 @@ static int run_cmd_line (char *heap,int flags)
 		    errnum = -1;
 		    break;
 		}
-		if (errnum >= 1255 || status == 0 || (status & 12))
+		if (errnum >= 2000 || status == 0 || (status & 12))
 		{
 			break;
 		}
@@ -485,7 +511,7 @@ enter_cmdline (char *heap, int forever)
       if (get_cmdline ())
 	{
 	  kernel_type = KERNEL_TYPE_NONE;
-	  debug = debug_old;
+	  if (debug == 1) debug = debug_old;
 	  return;
 	}
 

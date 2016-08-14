@@ -68,7 +68,10 @@ int grub_timeout = -1;
 int show_menu = 1;
 /* Don't display a countdown message for the hidden menu */
 int silent_hiddenmenu = 0;
-
+static int debug_prog;
+static int debug_break = 0;
+static int debug_check_memory = 0;
+static grub_u8_t msg_password[]="Password: ";
 unsigned long pxe_restart_config = 0;
 unsigned long configfile_in_menu_init = 0;
 
@@ -219,7 +222,7 @@ check_password (char* expected, password_t type)
 	/* Wipe out any previously entered password */
 	//   entered[0] = 0;
 	memset(entered,0,sizeof(entered));
-	get_cmdline_str.prompt = (unsigned char*)"Password: ";
+	get_cmdline_str.prompt = msg_password;
 	get_cmdline_str.maxlen = sizeof (entered) - 1;
 	get_cmdline_str.echo_char = '*';
 	get_cmdline_str.readline = 0;
@@ -265,6 +268,14 @@ static void disk_read_blocklist_func (unsigned long long sector, unsigned long o
 static void
 disk_read_blocklist_func (unsigned long long sector, unsigned long offset, unsigned long length)
 {
+#ifdef FSYS_INITRD
+	if (fsys_table[fsys_type].mount_func == initrdfs_mount)
+	{
+		if (query_block_entries >= 0)
+			printf("(md,0x%lx,0x%x)+1",(sector << SECTOR_BITS) + offset,length);
+		return;
+	}
+#endif
       if (blklst_num_sectors > 0)
 	{
 	  if (blklst_start_sector + blklst_num_sectors == sector
@@ -332,7 +343,15 @@ blocklist_func (char *arg, int flags)
   /* Open the file.  */
   if (! grub_open (arg))
     goto fail_open;
-
+#ifdef FSYS_INITRD
+  if (fsys_table[fsys_type].mount_func == initrdfs_mount)
+  {
+    disk_read_hook = disk_read_blocklist_func;
+    err = grub_read ((unsigned long long)(unsigned int)dummy,-1ULL, GRUB_READ);
+    disk_read_hook = 0;
+    goto fail_read;
+  }
+#endif
 #ifndef NO_DECOMPRESSION
   if (compressed_file)
   {
@@ -351,18 +370,7 @@ blocklist_func (char *arg, int flags)
 #endif /* NO_DECOMPRESSION */
 
   /* Print the device name.  */
-  if (query_block_entries >= 0)
-  {
-	grub_printf ("(%cd%d", ((current_drive & 0x80) ? 'h' : 'f'), (current_drive & ~0x80));
-  
-	if ((current_partition & 0xFF0000) != 0xFF0000)
-	    grub_printf (",%d", ((unsigned char)(current_partition >> 16)));
-  
-	if ((current_partition & 0x00FF00) != 0x00FF00)
-	    grub_printf (",%c", ('a' + ((unsigned char)(current_partition >> 8))));
-  
-	grub_printf (")");
-  }
+  if (query_block_entries >= 0) print_root_device (NULL,1);
 
   rawread_ignore_memmove_overflow = 1;
   /* Read in the whole file to DUMMY.  */
@@ -385,17 +393,7 @@ blocklist_func (char *arg, int flags)
 
   if (query_block_entries >= 0)
     grub_putchar ('\n', 255);
-#if 0
-  if (num_entries > 1)
-    query_block_entries = num_entries;
   else
-    {
-      query_block_entries = 1;
-      map_start_sector = start_sector;
-      map_num_sectors = num_sectors;
-    }
-#endif
-  if (query_block_entries < 0)
     {
       map_start_sector = blklst_start_sector;
       blklst_start_sector = 0;
@@ -435,7 +433,7 @@ static struct builtin builtin_blocklist =
 {
   "blocklist",
   blocklist_func,
-  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_IFTITLE,
+  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_IFTITLE | BUILTIN_NO_DECOMPRESSION,
   "blocklist FILE",
   "Print the blocklist notation of the file FILE."
 };
@@ -1153,13 +1151,21 @@ static struct builtin builtin_boot =
 void hexdump(grub_u64_t ofs,char* buf,int len)
 {
   quit_print=0;
+  int align = len > 16;
   while (len>0)
     {
       int cnt,k,i,j = 3;
 
-      i = ofs & 0xFLL;
-      if (i)
-         ofs &= ~0xFLL;
+      if (align)
+      {
+        i = ofs & 0xFLL;
+        if (i)
+          ofs &= ~0xFLL;
+      }
+      else
+      {
+        i = 0;
+      }
 
       if ((ofs >> 32))
           j = 7;
@@ -1455,7 +1461,7 @@ cat_func (char *arg, int flags)
 	}
   }else if (Hex == (++ret))	/* a trick for (ret = 1, Hex == 1) */
   {
-    j = 16 - (skip & 0xF);
+    j = 16/* - (skip & 0xF)*/;
 
     if (j > length)
       j = length;
@@ -2199,7 +2205,7 @@ chainloader_func (char *arg, int flags)
 			if ((err = probe_mbr ((struct master_and_dos_boot_sector *)(HMA_ADDR - 0x200), 0, 1, 0)))
 			{
 				if (debug > 0)
-					printf ("Warning! Partition table of HD image is faulty(err=%d).\n", err);
+					printf_warning ("Warning! Partition table of HD image is faulty(err=%d).\n", err);
 				sects = (*(unsigned char *)(HMA_ADDR - 0x200 + 0x1C4)) & 0x3F;
 				probed_total_sectors = *(unsigned long *)(HMA_ADDR - 0x200 + 0x1CA);
 				if (sects < 2 || probed_total_sectors < 5)
@@ -2381,7 +2387,7 @@ drdos:
 	    	*(unsigned long *)0x7BFC = (unsigned long)part_start + *(unsigned long *)0x7BF8; // root directory entry is in cluster 2 !!
 		}
 		else {
-			grub_printf("Error: Not FAT partition.");
+			printf_errinfo("Error: Not FAT partition.");
 			goto failure_exec_format;
 		}
 
@@ -4027,9 +4033,12 @@ debug_func (char *arg, int flags)
   }
   else
   {
-    if (errnum == 0)
-      errnum = ERR_BAD_ARGUMENT;
-    return 0;
+    int ret;
+    debug_prog = 1;
+    ret = command_func(arg,flags);
+    debug_prog = 0;
+    debug_check_memory = 0;
+    return ret;
   }
 
   return debug;
@@ -4040,8 +4049,9 @@ struct builtin builtin_debug =
   "debug",
   debug_func,
   BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST,
-  "debug [on | off | normal | status | INTEGER]",
-  "Turn on/off or display/set the debug level."
+  "debug [on | off | normal | status | INTEGER]"
+  "\ndebug Batch [ARGS]",
+  "Turn on/off or display/set the debug level or Single-step Debug for batch script"
 };
 
 
@@ -4697,7 +4707,6 @@ static char command_path[128]="(bd)/BOOT/GRUB/";
 static int command_path_len = 15;
 #define GRUB_MOD_ADDR (SYSTEM_RESERVED_MEMORY - 0x100000)
 #define UTF8_BAT_SIGN 0x54414221BFBBEFULL
-#define BAT_SIGN 0x54414221UL
 #define LONG_MOD_NAME_FLAG 0xEb
 struct exec_array
 {
@@ -4817,7 +4826,7 @@ static int grub_mod_list(const char *name)
       {
          if (debug > 0)
             grub_printf(" %s\n",pn);
-         ret++;
+         ret = (int)p_mod->data;
       }
       p_mod = (struct exec_array *)((unsigned int)(p_mod->data + mod_len + 0xf) & ~0xf);
    }
@@ -4857,7 +4866,7 @@ static int grub_mod_del(const char *name)
    return 0;
 }
 
-static int grub_exec_run(char *program, int flags);
+static int grub_exec_run(char *program, char *psp, int flags);
 static int test_open(char *path)
 {
     if (debug > 1)
@@ -5028,8 +5037,7 @@ command_func (char *arg, int flags)
 		}
 	    break;
      default:
-	if (debug > 0)
-        	grub_printf ("Warning! No such command: %s\n", arg);
+        printf_errinfo ("Error: No such command: %s\n", arg);
         errnum = 0;	/* No error, so that old menus will run smoothly. */
         //return 0;
         return 0;/* return 0 indicating a failure or a false case. */
@@ -5046,21 +5054,26 @@ command_func (char *arg, int flags)
 	unsigned long psp_len;
 	unsigned long prog_len;
 	char *program;
+	char *tmp;
 	prog_len = filemax;
 	psp_len = ((arg_len + strlen(file_path)+ 16) & ~0xF) + 0x10 + 0x20;
-	psp = (char *)grub_malloc(prog_len * 2 + psp_len);
+//	psp = (char *)grub_malloc(prog_len * 2 + psp_len);
+	tmp = (char *)grub_malloc(prog_len + 4096 + 16 + psp_len);
 
-	if (psp == NULL)
+//	if (psp == NULL)
+	if (tmp == NULL)
 	{
 		goto fail;
 	}
 
-	program = psp + psp_len;//(psp + psp_len) = entry point of program.
+//	program = psp + psp_len;//(psp + psp_len) = entry point of program.
+	program = (char *)((int)(tmp + 4095) & ~4095); /* 4K align the program */
+	psp = (char *)((int)(program + prog_len + 16) & ~0x0F);
 
+	unsigned long long *end_signature = (unsigned long long *)(program + (unsigned long)filemax - 8);
 	if (p_exec == NULL)
 	{
-			/* read file to buff and check exec signature. */
-		unsigned long long *end_signature = (unsigned long long *)(program + (unsigned long)filemax - 8);
+		/* read file to buff and check exec signature. */
 		if ((grub_read ((unsigned long long)(int)program, -1ULL, 0xedde0d90) != filemax))
 		{
 			if (! errnum)
@@ -5130,7 +5143,7 @@ command_func (char *arg, int flags)
 					regs.ss = 0x1000;
 					regs.esp = 0xFFFE;
 				}
-				grub_free(psp);
+				grub_free(tmp);
 				grub_close();
 				ret = realmode_run ((unsigned long)&regs);
 				/* restore memory 0x10000 - 0xA0000 */
@@ -5147,7 +5160,8 @@ command_func (char *arg, int flags)
 		grub_close ();
 		if (errnum)
 		{
-		   grub_free(psp);
+//		   grub_free(psp);
+		   grub_free(tmp);
 		   return 0;
 		}
 	}
@@ -5156,24 +5170,81 @@ command_func (char *arg, int flags)
 		grub_memmove(program,p_exec->data,prog_len);
 	}
 
+	if (*end_signature == 0xBCBAA7BA03051805ULL)
+	{
+		if (*(unsigned long long *)(program + prog_len - 0x20) == 0x646E655F6E69616D) /* main_end New Version*/
+		{
+			char * tmp1;
+			char * program1;
+			unsigned long *bss_end = (unsigned long *)(program + prog_len - 0x24);
+			if (prog_len != *bss_end){
+				grub_free(tmp);
+				prog_len = *bss_end;
+				tmp1 = (char *)grub_malloc(prog_len + 4096 + 16 + psp_len);
+				if (tmp1 == NULL)
+				{
+					goto fail;
+				}
+				program1 = (char *)((int)(tmp1 + 4095) & ~4095); /* 4K align the program */
+				if (tmp1 != tmp)
+				{
+					grub_memmove (program1, program, (unsigned long)filemax);
+					program = program1;
+					tmp = tmp1;
+				}
+				psp = (char *)((int)(program + prog_len + 16) & ~0x0F);
+			}
+		} else {//the old program
+			char *program1;
+			printf_warning ("\nWarning! The program is outdated!\n");
+			psp = (char *)grub_malloc(prog_len + 4096 + 16 + psp_len);
+			grub_free(tmp);
+			if (psp == NULL)
+			{
+				goto fail;
+			}
+			program1 = psp + psp_len;
+			grub_memmove (program1, program, prog_len);
+			program = program1;
+			tmp = psp;
+		}
+	}
+
 	program[prog_len] = '\0';
 	grub_memset(psp, 0, psp_len);
 	grub_memmove (psp + 16, arg , arg_len + 1);/* copy args into somewhere in PSP. */
 	filename = psp + 16 + arg_len + 1;
 	grub_strcpy(filename,file_path);
 	*(unsigned long *)psp = psp_len;
+#if 0
 	*(unsigned long *)(program - 4) = psp_len;		/* PSP length in bytes. it is in both the starting dword and the ending dword of the PSP. */
 	*(unsigned long *)(program - 8) = psp_len - 16 - (cmd_arg - arg);	/* args is here. */
 	*(unsigned long *)(program - 12) = flags;		/* flags is here. */
 	*(unsigned long *)(program - 16) = psp_len - 16;/*program filename here.*/
 	*(unsigned long *)(program - 20) = prog_len;//program length
 	*(unsigned long *)(program - 24) = program - filename; 
+#else
+	*(unsigned long *)(psp + psp_len - 4) = psp_len;	/* PSP length in bytes. it is in both the starting dword and the ending dword of the PSP. */
+	*(unsigned long *)(psp + psp_len - 8) = psp_len - 16 - (cmd_arg - arg);	/* args is here. */
+	*(unsigned long *)(psp + psp_len - 12) = flags;		/* flags is here. */
+	*(unsigned long *)(psp + psp_len - 16) = psp_len - 16;/*program filename here.*/
+	*(unsigned long *)(psp + psp_len - 20) = prog_len;//program length
+	*(unsigned long *)(psp + psp_len - 24) = psp_len - (filename - psp);
+#endif
+	{//New psp info
+		psp_info_t *PI = (psp_info_t*)psp;
+		PI->proglen=prog_len;
+		PI->arg=(unsigned short)(cmd_arg - arg) + 16;
+		PI->path=arg_len + 1 + 16;
+	}
 	/* (free_mem_start + pid - 16) is reserved for full pathname of the program file. */
 	int pid;
 	++prog_pid;
-	pid = grub_exec_run(program, flags);
+
+	pid = grub_exec_run(program, psp, flags);
 	/* on exit, release the memory. */
-	grub_free(psp);
+//	grub_free(psp);
+	grub_free(tmp);
 	if (!(--prog_pid) && *CMD_RUN_ON_EXIT)//errnum = -1 on exit run.
 	{
 		errnum = 0;
@@ -5273,7 +5344,7 @@ static int insmod_func(char *arg,int flags)
 	    else
             {
 		p_mod->name.ln.flag = LONG_MOD_NAME_FLAG;
-		p_mod->name.ln.len = sprintf(p_mod->data + filemax,"%s",name);
+		p_mod->name.ln.len = sprintf(p_mod->data + filemax,"%s",name) + 1;
             }
 
             ret = grub_mod_add(p_mod);
@@ -5695,7 +5766,7 @@ find_func (char *arg, int flags)
 		switch(*devtype)
 		{
 			case 'h':
-				if (tmp_drive >= 0x80 && tmp_drive < 0xA0 && tmp_partition != 0xFFFFFF)
+				if (tmp_drive >= 0x80 && tmp_drive < 0xA0)
 					FIND_DRIVES = 1;
 				break;
 			case 'u':
@@ -6980,7 +7051,13 @@ static struct builtin builtin_halt =
 
 static void print_doc(char *doc,int left)
 {
-  int max_doc_len = current_term->chars_per_line;
+	int max_doc_len = current_term->chars_per_line;
+	if (putchar_hooked)
+	{
+		grub_printf(doc);
+		return;
+	}
+
 	while (*doc)
 	{
 		int i;
@@ -7075,11 +7152,6 @@ help_func (char *arg, int flags)
 
 	  for (builtin = builtin_table; *builtin; builtin++)
 	    {
-	      #if 0
-	      /* Skip this if this is only for the configuration file.  */
-	      if (! ((*builtin)->flags & BUILTIN_CMDLINE))
-		continue;
-		#endif
 	      if (substring (arg, (*builtin)->name, 0) < 1 && (*builtin)->short_doc)
 		{
 		  /* At first, print the name and the short doc.  */
@@ -7255,8 +7327,8 @@ static struct builtin builtin_initrd =
 {
   "initrd",
   initrd_func,
-  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST,
-  "initrd FILE [FILE ...]",
+  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_NO_DECOMPRESSION,
+  "initrd [@name=]FILE [@name=][FILE ...]",
   "Load an initial ramdisk FILE for a Linux format boot image and set the"
   " appropriate parameters in the Linux setup area in memory. For Linux"
   " 2.6+ kernels, multiple cpio files can be loaded."
@@ -8140,7 +8212,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
   if (filemax < 512)
   {
 	if (debug > 1)
-		printf ("Error: filesize(=%d) less than 512.\n"
+		printf_errinfo ("Error: filesize(=%d) less than 512.\n"
 			, (unsigned long)filemax);
 	return 1;
   }
@@ -8151,7 +8223,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
   if (BS->boot_signature != 0xAA55)
   {
 	if (debug > 1)
-		printf ("Warning!!! No boot signature 55 AA.\n");
+		printf_warning ("Warning!!! No boot signature 55 AA.\n");
   }
 #endif
 
@@ -8164,7 +8236,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
       if ((unsigned char)(BS->P[i].boot_indicator << 1))/* if neither 0x80 nor 0 */
       {
 	if (debug > 1)
-		printf ("Error: invalid boot indicator(0x%X) for entry %d.\n"
+		printf_errinfo ("Error: invalid boot indicator(0x%X) for entry %d.\n"
 			, (unsigned char)(BS->P[i].boot_indicator), i);
 	ret_val = 2;
 	goto err_print_hex;
@@ -8174,7 +8246,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
       if (active_partitions > 1)
       {
 	if (debug > 1)
-		printf ("Error: duplicate active flag at entry %d.\n", i);
+		printf_errinfo ("Error: duplicate active flag at entry %d.\n", i);
 	ret_val = 3;
 	goto err_print_hex;
       }
@@ -8189,14 +8261,14 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
 	  if (! BS->P[i].start_lba)
 	  {
 		if (debug > 1)
-			printf ("Error: partition %d should not start at sector 0(the MBR sector).\n", i);
+			printf_errinfo ("Error: partition %d should not start at sector 0(the MBR sector).\n", i);
 		ret_val = 4;
 		goto err_print_hex;
 	  }
 	  if (! BS->P[i].total_sectors)
 	  {
 		if (debug > 1)
-			printf ("Error: number of total sectors in partition %d should not be 0.\n", i);
+			printf_errinfo ("Error: number of total sectors in partition %d should not be 0.\n", i);
 		ret_val = 5;
 		goto err_print_hex;
 	  }
@@ -8214,7 +8286,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
 		(BS->P[j].start_lba - BS->P[i].start_lba < BS->P[i].total_sectors))
 	    {
 		if (debug > 1)
-			printf ("Error: overlapped partitions %d and %d.\n", j, i);
+			printf_errinfo ("Error: overlapped partitions %d and %d.\n", j, i);
 		ret_val = 6;
 		goto err_print_hex;
 	    }
@@ -8236,7 +8308,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
 	  if (! X /* || BS->P[i].start_lba < Smax */)
 	  {
 		if (debug > 1)
-			printf ("Error: starting S of entry %d should not be 0.\n", i);
+			printf_errinfo ("Error: starting S of entry %d should not be 0.\n", i);
 		ret_val = 7;
 		goto err_print_hex;
 	  }
@@ -8262,7 +8334,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
 	  if (! Y)
 	  {
 		if (debug > 1)
-			printf ("Error: ending S of entry %d should not be 0.\n", i);
+			printf_errinfo ("Error: ending S of entry %d should not be 0.\n", i);
 		ret_val = 8;
 		goto err_print_hex;
 	  }
@@ -8273,14 +8345,14 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
 	  if (L[i+4] < Y)
 	  {
 		if (debug > 1)
-			printf ("Error: partition %d ended too near.\n", i);
+			printf_errinfo ("Error: partition %d ended too near.\n", i);
 		ret_val = 9;
 		goto err_print_hex;
 	  }
 	  if (L[i+4] > 0x100000000ULL)
 	  {
 		if (debug > 1)
-			printf ("Error: partition %d ended too far.\n", i);
+			printf_errinfo ("Error: partition %d ended too far.\n", i);
 		ret_val = 10;
 		goto err_print_hex;
 	  }
@@ -8306,7 +8378,7 @@ probe_mbr (struct master_and_dos_boot_sector *BS, unsigned long start_sector1, u
   if (non_empty_entries == 0)
   {
 	if (debug > 1)
-		printf ("Error: partition table is empty.\n");
+		printf_errinfo ("Error: partition table is empty.\n");
 	ret_val = 11;
 	goto err_print_hex;
   }
@@ -8795,7 +8867,7 @@ map_func (char *arg, int flags)
 		{
 			if (debug > 0)
 			{
-				printf ("Fatal: Error %d occurred while 'map %s'. Please report this bug.\n", errnum, tmp);
+				printf_errinfo ("Fatal: Error %d occurred while 'map %s'. Please report this bug.\n", errnum, tmp);
 			}
 			return 0;
 		}
@@ -9329,7 +9401,7 @@ map_func (char *arg, int flags)
       if (debug > 0 && ! disable_map_info)
       {
 	if (probed_total_sectors > sector_count)
-	  grub_printf ("Warning: BPB total_sectors(%ld) is greater than the number of sectors in the whole disk image (%ld). The int13 handler will disable any read/write operations across the image boundary. That means you will not be able to read/write sectors (in absolute address, i.e., lba) %ld - %ld, though they are logically inside your file system.\n", (unsigned long long)probed_total_sectors, (unsigned long long)sector_count, (unsigned long long)sector_count, (unsigned long long)(probed_total_sectors - 1));
+	  printf_warning ("Warning: BPB total_sectors(%ld) is greater than the number of sectors in the whole disk image (%ld). The int13 handler will disable any read/write operations across the image boundary. That means you will not be able to read/write sectors (in absolute address, i.e., lba) %ld - %ld, though they are logically inside your file system.\n", (unsigned long long)probed_total_sectors, (unsigned long long)sector_count, (unsigned long long)sector_count, (unsigned long long)(probed_total_sectors - 1));
 	else if (probed_total_sectors < sector_count && ! disable_map_info)
 	  grub_printf ("info: BPB total_sectors(%ld) is less than the number of sectors in the whole disk image(%ld).\n", (unsigned long long)probed_total_sectors, (unsigned long long)sector_count);
       }
@@ -9411,7 +9483,7 @@ failed_probe_BPB:
       if (debug > 0 && ! disable_map_info)
       {
 	if (probed_total_sectors > sector_count)
-	  grub_printf ("Warning: total_sectors calculated from partition table(%ld) is greater than the number of sectors in the whole disk image (%ld). The int13 handler will disable any read/write operations across the image boundary. That means you will not be able to read/write sectors (in absolute address, i.e., lba) %ld - %ld, though they are logically inside your emulated virtual disk(according to the partition table).\n", (unsigned long long)probed_total_sectors, (unsigned long long)sector_count, (unsigned long long)sector_count, (unsigned long long)(probed_total_sectors - 1));
+	  printf_warning ("Warning: total_sectors calculated from partition table(%ld) is greater than the number of sectors in the whole disk image (%ld). The int13 handler will disable any read/write operations across the image boundary. That means you will not be able to read/write sectors (in absolute address, i.e., lba) %ld - %ld, though they are logically inside your emulated virtual disk(according to the partition table).\n", (unsigned long long)probed_total_sectors, (unsigned long long)sector_count, (unsigned long long)sector_count, (unsigned long long)(probed_total_sectors - 1));
 	else if (probed_total_sectors < sector_count)
 	  grub_printf ("info: total_sectors calculated from partition table(%ld) is less than the number of sectors in the whole disk image(%ld).\n", (unsigned long long)probed_total_sectors, (unsigned long long)sector_count);
       }
@@ -9671,7 +9743,7 @@ geometry_probe_ok:
 	if (BPB_H != probed_heads || BPB_S != probed_sectors_per_track)
 	{
 		//if (debug > 0)
-		//	grub_printf ("\nWarning!!! geometry (H/S=%d/%d) from the (extended) partition table\nconflict with geometry (H/S=%d/%d) in the BPB. The boot could fail!\n", probed_heads, probed_sectors_per_track, BPB_H, BPB_S);
+		//	printf_warning ("\nWarning!!! geometry (H/S=%d/%d) from the (extended) partition table\nconflict with geometry (H/S=%d/%d) in the BPB. The boot could fail!\n", probed_heads, probed_sectors_per_track, BPB_H, BPB_S);
 		if (mem != -1ULL)
 			grub_close ();
 		return ! (errnum = ERR_EXTENDED_PARTITION);
@@ -9682,7 +9754,7 @@ geometry_probe_ok:
   else if (heads_per_cylinder != probed_heads)
     {
 	if (debug > 0 && ! disable_map_info)
-	  grub_printf ("\nWarning!! Probed number-of-heads(%d) is not the same as you specified.\nThe specified value %d takes effect.\n", probed_heads, heads_per_cylinder);
+	  printf_warning ("\nWarning!! Probed number-of-heads(%d) is not the same as you specified.\nThe specified value %d takes effect.\n", probed_heads, heads_per_cylinder);
     }
 
   if ((long long)sectors_per_track <= 0)
@@ -9690,7 +9762,7 @@ geometry_probe_ok:
   else if (sectors_per_track != probed_sectors_per_track)
     {
 	if (debug > 0 && ! disable_map_info)
-	  grub_printf ("\nWarning!! Probed sectors-per-track(%d) is not the same as you specified.\nThe specified value %d takes effect.\n", probed_sectors_per_track, sectors_per_track);
+	  printf_warning ("\nWarning!! Probed sectors-per-track(%d) is not the same as you specified.\nThe specified value %d takes effect.\n", probed_sectors_per_track, sectors_per_track);
     }
 
 map_whole_drive:
@@ -9765,6 +9837,8 @@ map_whole_drive:
 			{
 				/* to_o = */ to = 0xFFFF;		/* memory device */
 			}
+		    if (! ((hooked_drive_map[j].to_sector) & 0x80)) // The TO drive is not in-situ
+		    {
 			if (start_sector == 0 && (sector_count == 0 || (sector_count == 1 && (long long)heads_per_cylinder <= 0 && (long long)sectors_per_track <= 1)))
 			{
 				sector_count = hooked_drive_map[j].sector_count;
@@ -9772,6 +9846,7 @@ map_whole_drive:
 				sectors_per_track = (hooked_drive_map[j].max_sector) & 0x3F;
 			}
 			start_sector += hooked_drive_map[j].start_sector;
+		    }
 
 			/* If TO == FROM and whole drive is mapped, and, no map options occur, then delete the entry.  */
 			if (to == from && read_Only == 0 && fake_write == 0 && disable_lba_mode == 0
@@ -10401,7 +10476,7 @@ md5crypt_func (char *arg, int flags)
   {
 	  /* Get a password.  */
 	  grub_memset (key, 0, sizeof (key));
-	  get_cmdline_str.prompt = (unsigned char*)"Password: ";
+	  get_cmdline_str.prompt = msg_password;
 	  get_cmdline_str.maxlen = sizeof (key) - 1;
 	  get_cmdline_str.echo_char = '*';
 	  get_cmdline_str.readline = 0;
@@ -10495,29 +10570,14 @@ static struct builtin builtin_module =
 static int
 modulenounzip_func (char *arg, int flags)
 {
-  int ret;
-#ifndef NO_DECOMPRESSION
-  int no_decompression_bak = no_decompression;
-#endif
-
-#ifndef NO_DECOMPRESSION
-  no_decompression = 1;
-#endif
-
-  ret = module_func (arg, flags);
-
-#ifndef NO_DECOMPRESSION
-  no_decompression = no_decompression_bak;
-#endif
-
-  return ret;
+  return module_func (arg, flags);
 }
 
 static struct builtin builtin_modulenounzip =
 {
   "modulenounzip",
   modulenounzip_func,
-  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST,
+  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_NO_DECOMPRESSION,
   "modulenounzip FILE [ARG ...]",
   "The same as `module', except that automatic decompression is"
   " disabled."
@@ -11071,7 +11131,7 @@ password_func (char *arg, int flags)
       
       /* Wipe out any previously entered password */
       entered[0] = 0;
-      get_cmdline_str.prompt = "Password: ";
+      get_cmdline_str.prompt = msg_password;
       get_cmdline_str.maxlen = sizeof (entered) - 1;
       get_cmdline_str.echo_char = '*';
       get_cmdline_str.readline = 0;
@@ -11311,18 +11371,14 @@ static struct builtin builtin_quit =
 #ifndef NO_DECOMPRESSION
 static int raw_func(char *arg, int flags)
 {
-	int no_decompression_bak = no_decompression;
-	no_decompression = 1;
-	int ret = run_line(arg,flags);
-	no_decompression = no_decompression_bak;
-	return ret;
+	return run_line(arg,flags);
 }
 
 static struct builtin builtin_raw =
 {
   "raw",
   raw_func,
-  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_IFTITLE,
+  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_IFTITLE | BUILTIN_NO_DECOMPRESSION,
   "raw COMMAND",
   "run COMMAND without auto-decompression."
 };
@@ -11802,7 +11858,7 @@ static struct builtin builtin_write =
 {
   "write",
   write_func,
-  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_IFTITLE | BUILTIN_NO_DECOMPRESSION,
+  BUILTIN_MENU | BUILTIN_CMDLINE | BUILTIN_SCRIPT | BUILTIN_HELP_LIST | BUILTIN_IFTITLE,
   "write [--offset=SKIP] [--bytes=N] ADDR_OR_FILE INTEGER_OR_STRING",
   "Write a 32-bit value to memory or write a string to file(or device!)."
 };
@@ -11864,7 +11920,16 @@ print_root_device (char *buffer,int flag)
 				grub_printf("(cd)");
 				break;
 			}
-			if (tmp_drive & 0x80)
+			else if (tmp_drive == 0xFFFF)
+			{
+				grub_printf("(md");
+				if (md_part_base) grub_printf(",0x%lx,0x%lx",md_part_base,md_part_size);
+			}
+			else if (tmp_drive == ram_drive)
+			{
+				grub_printf("(rd");
+			}
+			else if (tmp_drive & 0x80)
 			{
 				/* Hard disk drive.  */
 				grub_printf("(hd%d", (tmp_drive - 0x80));
@@ -14132,7 +14197,9 @@ static struct builtin builtin_calc =
   "calc [*INTEGER=] [*]INTEGER OPERATOR [[*]INTEGER]",
   "GRUB4DOS Simple Calculator.\n"
   "Available Operators: + - * / % << >> ^ & |"
-  "\nNote: this is a Simple Calculator and From left to right only."
+  "\nNote: 1.this is a Simple Calculator and From left to right only."
+  "\n      2.'^' is XOR function."
+  "\n      3.operators '| % >>' are command operator,can not have space on both sides"
 };
 
 /* graphicsmode */
@@ -14532,14 +14599,13 @@ echo_func (char *arg,int flags)
       
       grub_putchar((unsigned char)*arg, 255);
    }
-
+   if (current_term->setcolorstate)
+	  current_term->setcolorstate (COLOR_STATE_STANDARD);
 	if ((echo_ec & 1) == 0)
 	{
 		grub_putchar('\r', 255);
 		grub_putchar('\n', 255);
 	}
-   if (current_term->setcolorstate)
-	  current_term->setcolorstate (COLOR_STATE_STANDARD);
    if (xy_changed)
 	gotoxy(saved_x, saved_y);	//restore cursor
    return 1;
@@ -14721,7 +14787,7 @@ int envi_cmd(const char *var,char * const env,int flags)
 		return count;
 	}
 
-	char ch[MAX_VAR_LEN +1] = "\0\0\0\0\0\0\0\0";
+	char ch[MAX_VAR_LEN +2] = "\0\0\0\0\0\0\0\0\0\0";
 	char *p = (char *)var;
 	char *p_name = NULL;
 	int ou_start = 0;
@@ -14750,8 +14816,17 @@ int envi_cmd(const char *var,char * const env,int flags)
 	{
 		return (*p == '^' || *p== '%')?p-var:0;
 	}
+
+	if (flags == 0 && *p && i > MAX_VAR_LEN )
+	{
+		errnum = ERR_BAD_ARGUMENT;
+		return 0;
+	}
+	if (ch[MAX_VAR_LEN])
+		printf_warning("Warning: VAR name [%s] shortened to 8 chars!\n",ch);
 	if (*p && (flags != 1 || (*var == '%' && *p != '%')))
 		return 0;
+
 
 	/*
 	i >= 60  system variables.
@@ -15126,11 +15201,14 @@ when all batch script is exit the prog_pid is 0;
 struct bat_array
 {
 	int pid;
+	int debug_break;
 	struct bat_label *entry;
 	/*
 	 (char **)(entry + 0x80) is the entry of bat_script to run.
 	*/
+	grub_u32_t size;
 	char *path;
+	char md[0];
 } *p_bat_prog = NULL;
 
 static char **batch_args;
@@ -15152,15 +15230,16 @@ static int bat_find_label(char *label)
 		}
 	}
 
-	if (debug > 0)
-		printf(" cannot find the batch label specified - %s\n",label);
+	printf_errinfo(" cannot find the batch label specified - %s\n",label);
 	return 0;
 }
 
 static int bat_get_args(char *arg,char *buff,int flags)
 {
-	char *p = ((char *)0x4CA40);
+#define ARGS_TMP RAW_ADDR(0x100000)
+	char *p = ((char *)ARGS_TMP);
 	char *s1 = buff;
+	int isParam0 = (flags & 0xff);
 
 	if (*arg == '(')
 	{
@@ -15180,10 +15259,10 @@ static int bat_get_args(char *arg,char *buff,int flags)
 			while ((*p++ = *arg++) != ')')
 				;
 			*p = 0;
-			case_convert((char*)0x4CA40,'A');
+			case_convert((char*)ARGS_TMP,'A');
 		}
 	}
-	else if (flags & 0xff) // if is Param 0
+	else if (isParam0) // if is Param 0
 	{
 		p += sprintf(p,"%s",p_bat_prog->path) - 1;//use program run dir
 	}
@@ -15195,20 +15274,28 @@ static int bat_get_args(char *arg,char *buff,int flags)
 	}
 	if (*arg != '/')
 		*p++ = '/';
-	if (p + strlen(arg) >= (char *)0x4CA40 + 0xA0)
+	if (p + strlen(arg) >= (char *)ARGS_TMP + 0x400)
 		goto quit;
 	sprintf(p,"%s",arg);
-	p = ((char *)0x4CA40);
+	p = ((char *)ARGS_TMP);
 	flags >>= 8;
+
+	if (flags & 0x20) buff += sprintf(buff,"%s",p_bat_prog->md);
+
 	if (flags & 0x10)
 	{
-		if (grub_open(p))
+		if (isParam0)
 		{
-			buff += sprintf(buff,"0x%lx",filemax);
+			buff += sprintf(buff,"0x%X",p_bat_prog->size);
+		}
+		else if (grub_open(p))
+		{
+			buff += sprintf(buff,"0x%lX",filemax);
 			grub_close();
 		}
 		errnum = 0;
 		flags &= 0xf;
+		if (flags) *buff++ = '\t';
 	}
 
 	if (flags == 0x2f)
@@ -15262,8 +15349,10 @@ bat_run_script
 run batch script.
 if filename is NULL then is a call func.the first word of arg is a label.
 */
+
 static int bat_run_script(char *filename,char *arg,int flags)
 {
+	int debug_bat = debug_prog;
 	if (prog_pid != p_bat_prog->pid)
 	{
 		errnum = ERR_FUNC_CALL;
@@ -15271,9 +15360,7 @@ static int bat_run_script(char *filename,char *arg,int flags)
 	}
 
 	char **bat_entry = (char **)(p_bat_prog->entry + 0x80);
-
-	int debug_bat = debug > 10?1:0;
-	int i = 1;
+	grub_u32_t i = 1;
 
 	if (filename == NULL)
 	{//filename is null is a call func;
@@ -15286,7 +15373,7 @@ static int bat_run_script(char *filename,char *arg,int flags)
 		}
 	}
 
-	if (debug_bat)
+	if (debug_prog)
 	    printf("S^:%s [%d]\n",filename,prog_pid);
 
 	char **p_entry = bat_entry + i;
@@ -15296,14 +15383,14 @@ static int bat_run_script(char *filename,char *arg,int flags)
 	char *p_rep;
 	char *p_buff;//buff for command_line
 	char *cmd_buff;
-	unsigned long arg_len = grub_strlen(arg) + 1;
+	grub_u32_t ret = grub_strlen(arg) + 1;
 	//if (arg_len > 0x8000)
 	//{
 	//    errnum = ERR_WONT_FIT;
 	//    return 0;
 	//}
 
-	if ((cmd_buff = grub_malloc(arg_len + 0x800)) == NULL)
+	if ((cmd_buff = grub_malloc(ret + 0x800)) == NULL)
 	{
 		return 0;
 	}
@@ -15311,12 +15398,12 @@ static int bat_run_script(char *filename,char *arg,int flags)
 	/*copy filename to buff*/
 	i = grub_strlen(filename);
 	grub_memmove(cmd_buff,filename,i+1);
-	p_buff = cmd_buff + ((i+16) & ~0xf);
+	p_buff = cmd_buff + ((i + 16) & ~0xf);
 	s[0] = cmd_buff;
 	/*copy arg to buff*/
-	grub_memmove(p_buff, arg, arg_len);
+	grub_memmove(p_buff, arg, ret);
 	arg = p_buff;
-	p_buff = p_buff + ((arg_len + 16) & ~0xf);
+	p_buff = p_buff + ((ret + 16) & ~0xf);
 
 	/*build args %1-%9*/
 	for (i = 1;i < 9; ++i)
@@ -15326,17 +15413,25 @@ static int bat_run_script(char *filename,char *arg,int flags)
 			arg = skip_to(SKIP_WITH_TERMINATE | 1,arg);
 	}
 	s[9] = arg;// %9 for other args.
-	int ret = 0;
+
 	char *p_bat;
 	char **backup_args = batch_args;
 	SETLOCAL *saved_bc = bc;
 	batch_args = s;
 	bc = cc; //saved for batch
+	ret = 0;
 
 	while ((p_bat = *p_entry))//copy cmd_line to p_buff and then run it;
 	{
 		p_cmd = p_buff;
 		char *file_ext;
+
+		if (p_bat == (char*)-1)//Skip Line
+		{
+			p_entry++;
+			continue;
+		}
+
 		while(*p_bat)
 		{
 			if (*p_bat != '%' || (file_ext = p_bat++,*p_bat == '%'))
@@ -15350,7 +15445,7 @@ static int bat_run_script(char *filename,char *arg,int flags)
 			if (*p_bat == '~')
 			{
 				p_bat++;
-				i |= 0x20;
+				i |= 0x80;
 				while (*p_bat)
 				{
 					if (*p_bat == 'd')
@@ -15365,6 +15460,8 @@ static int bat_run_script(char *filename,char *arg,int flags)
 						i |= 0xf;
 					else if (*p_bat == 'z')
 						i |= 0x10;
+					else if (*p_bat == 'm')
+						i |= 0x20;
 					else
 						break;
 					p_bat++;
@@ -15377,11 +15474,11 @@ static int bat_run_script(char *filename,char *arg,int flags)
 				if (*p_rep)
 				{
 					int len_c = 0;
-					if ((i & 0x20) && *p_rep == '\"')
+					if ((i & 0x80) && *p_rep == '\"')
 					{
 						p_rep++;
 					}
-					if (i & 0x1f)
+					if (i & 0x3f)
 					{
 						len_c = bat_get_args(p_rep,p_cmd,i << 8 | (s[*p_bat - '0'] == cmd_buff));
 					}
@@ -15392,7 +15489,7 @@ static int bat_run_script(char *filename,char *arg,int flags)
 
 					if (len_c)
 					{
-						if ((i & 0x20) && p_cmd[len_c-1] == '\"')
+						if ((i & 0x80) && p_cmd[len_c-1] == '\"')
 						--len_c;
 						p_cmd += len_c;
 					}
@@ -15417,22 +15514,83 @@ static int bat_run_script(char *filename,char *arg,int flags)
 		}
 
 		*p_cmd = '\0';
+
+		if (p_bat_prog->debug_break && (p_bat_prog->debug_break == (grub_u32_t)(p_entry-bat_entry))) debug_bat = debug_prog = 1;
+		if (debug_prog) printf("S[%d#%d]:[%s]\n",prog_pid,((grub_u32_t)(p_entry-bat_entry)),p_buff);
 		if (debug_bat)
 		{
-			printf("S1:[%s]\n",p_buff);
-			char key=getkey() & 0xdf;
-			if (key == 'Q')
+			Next_key:
+			if (current_term->setcolorstate) current_term->setcolorstate(COLOR_STATE_HEADING);
+			grub_printf ("[Q->quit,C->Shell,S->Skip,E->End step,B->Breakpoint,N->step Next func]");
+			i=getkey() & 0xdf;
+			if (current_term->setcolorstate) current_term->setcolorstate(COLOR_STATE_STANDARD);
+			grub_printf("\r%75s","\r");
+			switch(i)
 			{
-				errnum = 1001;
-				break;
+				case 'Q':
+					errnum = 2000;
+					break;
+				case 'C':
+					commandline_func((char *)SYSTEM_RESERVED_MEMORY,0);
+					break;
+				case 'S':
+					++p_entry;
+					continue;
+				case 'N':
+					debug_bat = 0;
+					break;
+				case 'E':
+					debug_bat = debug_prog = 0;
+					break;
+				case 'B':
+				{
+					char buff[12];
+					grub_u64_t t;
+					buff[0] = 0;
+					printf("Current:\nDebug Check Memory [0x%x]=>0x%x\nDebug Break Line: %d\n",debug_check_memory,debug_break,p_bat_prog->debug_break);
+					get_cmdline_str.prompt = &msg_password[8];
+					get_cmdline_str.maxlen = sizeof (buff) - 1;
+					get_cmdline_str.echo_char = 0;
+					get_cmdline_str.readline = 0;
+					get_cmdline_str.cmdline = (grub_u8_t*)buff;
+					get_cmdline ();
+
+					if (buff[0] == '+' || buff[0] == '-' || buff[0] == '*') p_bat = &buff[1];
+					else p_bat = buff;
+
+					if (safe_parse_maxint (&p_bat, &t))
+					{
+						if (buff[0] == '*')
+						{
+							debug_check_memory = t;
+							debug_break = *(int*)debug_check_memory;
+							printf("\rDebug Check Memory [0x%x]=>0x%x\n",debug_check_memory,debug_break);
+						}
+						else
+						{
+							if (buff[0] == '-') t = (grub_u32_t)(p_entry-bat_entry) - (int)t;
+							else if (buff[0] == '+') t += (grub_u32_t)(p_entry-bat_entry);
+
+							p_bat_prog->debug_break = t;
+							printf("\rDebug Break Line: %d\n",p_bat_prog->debug_break);
+						}
+					}
+					goto Next_key;
+				}
 			}
-			else if (key == 'C')
-			{
-				commandline_func((char *)SYSTEM_RESERVED_MEMORY,0);
-			}
+			if (errnum == 2000) break;
 		}
 
 		ret = run_line (p_buff,flags);
+
+		if (debug_check_memory)
+		{
+			if (debug_break != *(int*)debug_check_memory)
+			{
+				printf("\nB: %s\n[0x%x]=>0x%x (0x%x)\n",p_buff,debug_check_memory,*(int*)debug_check_memory,debug_break);
+				debug_bat = debug_prog = 1;
+			}
+		}
 
 		if ((*(short *)0x417 & 0x104) && checkkey() == 0x2E03)
 		{
@@ -15444,7 +15602,7 @@ static int bat_run_script(char *filename,char *arg,int flags)
 			putchar(k, 255);
 			if (k == 'Y')
 			{
-					errnum = 1255;
+					errnum = 2000;
 					break;
 			}
 			if (k != 'N')
@@ -15479,10 +15637,10 @@ static int bat_run_script(char *filename,char *arg,int flags)
 	bc = saved_bc;
 	batch_args = backup_args;
 	grub_free(cmd_buff);
-	if (debug_bat)
+	if (debug_prog)
 		printf("S$:%s [%d]\n",filename,prog_pid);
 	errnum = (i == 1000) ? 0 : i;
-	return errnum?0:ret;
+	return errnum?0:(int)ret;
 }
 
 
@@ -15601,16 +15759,18 @@ static struct builtin builtin_shift =
   " not given, it is assumed to be 0."
 };
 
-static int grub_exec_run(char *program, int flags)
+static int grub_exec_run(char *program, char *psp, int flags)
 {
 	int pid;
-	char *arg = program - (*(unsigned long *)(program - 8));
+	psp_info_t *PI=(psp_info_t *)psp;
+	char *arg = psp + PI->arg;
 		/* kernel image is destroyed, so invalidate the kernel */
 	if (kernel_type < KERNEL_TYPE_CHAINLOADER)
 		kernel_type = KERNEL_TYPE_NONE;
 	/*Is a batch file? */
 	if (*(unsigned long *)program == BAT_SIGN || *(unsigned long *)program == 0x21BFBBEF)//!BAT
 	{
+		int crlf = 0;
 		if (prog_pid >= 10)
 		{
 			return 0;
@@ -15618,16 +15778,34 @@ static int grub_exec_run(char *program, int flags)
 		struct bat_array *p_bat_array = (struct bat_array *)grub_malloc(0x2600);
 		if (p_bat_array == NULL)
 			return 0;
-		p_bat_array->path = program - (*(unsigned long *)(program - 24));
+//		p_bat_array->path = program - (*(unsigned long *)(program - 24));
+		p_bat_array->path = psp + PI->path;
 		struct bat_array *p_bat_array_orig = p_bat_prog;
 
-		char *filename = program - (*(unsigned long *)(program - 16));
-		char *p_bat;
+		char *filename = PI->filename;
+		char *p_bat = program;
 		struct bat_label *label_entry =(struct bat_label *)((char *)p_bat_array + 0x200);
 		char **bat_entry = (char **)(label_entry + 0x80);//0x400/sizeof(label_entry)
 		unsigned long i_bat = 1,i_lab = 1;//i_bat:lines of script;i_lab=numbers of label.
+		grub_u32_t size = grub_strlen(program);
+
+		p_bat_array->size = size++;
+		sprintf(p_bat_array->md,"(md,0x%x,0x%x)",program + size,PI->proglen - size);
+
+		if (debug_prog)
+		{
+			while(*p_bat++)
+			{
+				if (*p_bat == '\r')
+					crlf = 1;
+				else if (*p_bat != '\n')
+					continue;
+				break;
+			}
+		}
 
 		program = skip_to(SKIP_LINE,program);//skip head
+
 		while ((p_bat = program))//scan batch file and make label and bat entry.
 		{
 			program = skip_to(SKIP_LINE,program);
@@ -15636,10 +15814,22 @@ static int grub_exec_run(char *program, int flags)
 				nul_terminate(p_bat);
 				label_entry[i_lab].label = p_bat + 1;
 				label_entry[i_lab].line = i_bat;
+				if (debug_prog) bat_entry[i_bat++] = (char*)-1;
 				i_lab++;
 			}
 			else
 				bat_entry[i_bat++] = p_bat;
+
+			if (debug_prog)
+			{
+				char *p = p_bat;
+				p += grub_strlen(p_bat) + crlf;
+				while(++p < program)
+				{
+					if (!*p || *p == '\n') bat_entry[i_bat++] = (char*)-1;
+				}
+			}
+
 			if ((i_lab & 0x80) || (i_bat & 0x800))//max label 128,max script line 2048.
 			{
 				grub_free(p_bat_array);
@@ -15652,11 +15842,13 @@ static int grub_exec_run(char *program, int flags)
 		label_entry[0].label = "eof";
 		label_entry[0].line = i_bat;
 		p_bat_array->pid = prog_pid;
+		p_bat_array->debug_break = 0;
 		p_bat_array->entry = label_entry;
 		p_bat_prog = p_bat_array;
 		pid = bat_run_script(filename, arg,flags | BUILTIN_BAT_SCRIPT | BUILTIN_USER_PROG);//run batch script from line 0;
 
 		p_bat_prog = p_bat_array_orig;
+
 		grub_free(p_bat_array);
 		return pid;
 	}

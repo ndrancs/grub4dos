@@ -17,6 +17,7 @@ AC_INIT([GRUB], [0.97], [bug-grub@gnu.org])
 AC_CONFIG_SRCDIR([stage2/stage2.c])
 AC_CONFIG_HEADER([config.h])
 AM_INIT_AUTOMAKE
+AM_SILENT_RULES([yes])
 AM_PROG_AS
 
 dnl Generate stage2/grub4dos_version.h
@@ -193,6 +194,8 @@ fi
 LDFLAGS_SAVED="${LDFLAGS}"
 case "$host_os" in
   mingw32 | cygwin)
+    # Remove exception handling (objcopy can get confused with .eh_frame sections otherwise)
+    CPPFLAGS="$CPPFLAGS -fno-exceptions -fno-asynchronous-unwind-tables -fno-unwind-tables"
     BIN_LDFLAGS="-Wl,-T"'$(top_srcdir)'"/ldscript"
     LDFLAGS="${LDFLAGS} -Wl,-T${srcdir}/ldscript"
     BUILD_DIRS="stage2"
@@ -341,6 +344,13 @@ AC_ARG_ENABLE(pxe,
 
 if test x"$enable_pxe" != xno; then
   FSYS_CFLAGS="$FSYS_CFLAGS -DFSYS_PXE=1"
+fi
+
+AC_ARG_ENABLE(initrdfs,
+  [  --disable-initrdfs            disable initrdfs support in Stage 2])
+
+if test x"$enable_initrdfs" != xno; then
+  FSYS_CFLAGS="$FSYS_CFLAGS -DFSYS_INITRD=1"
 fi
 
 AC_ARG_ENABLE(fb,

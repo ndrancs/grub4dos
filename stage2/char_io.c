@@ -115,7 +115,7 @@ void
 print_error (void)
 {
   if (errnum > ERR_NONE && errnum < MAX_ERR_NUM)
-    grub_printf ("\nError %u: %s\n", errnum, err_list[errnum]);
+    printf_errinfo ("\nError %u:(http://grub4dos.chenall.net/e/%u)\n\t %s\n", errnum, errnum, err_list[errnum]);
 }
 
 char *
@@ -271,7 +271,17 @@ grub_sprintf (char *buffer, const char *format, ...)
   unsigned int length;
   int align;
   unsigned int accuracy;
+  unsigned char *putchar_hook_back=NULL;
+  int stdout = 1;
+  if (buffer == (char*)1 || buffer == (char*)2)
+  {
+    if (debug < 2 && buffer == (char*)1)// show nothing when debug < 2 for warning message
+      return 1;
 
+    stdout = 0;
+    putchar_hook_back = set_putchar_hook((grub_u8_t*)0);
+    bp=NULL;buffer=NULL;//reset buffer and bp to NULL
+  }
   //dataptr++;
   //dataptr++;
 #if 1
@@ -551,6 +561,9 @@ find_specifier:
 #endif
   if (buffer)
 	*bp = 0;
+  if (stdout == 0)
+	set_putchar_hook(putchar_hook_back);
+
   return bp - (unsigned char *)buffer;
 }
 
@@ -920,8 +933,8 @@ static void cl_refresh (int full, int len)
       if (i == lpos)
 		lpos_fontx = fontx;
 
-      if (lpos_fontx == 0)
-	printf ("\nReport bug! lpos=%d, start=%d, len=%d, llen=%d, plen=%d, section=%d\n", lpos, start, len, llen, plen, section);
+      if (len && lpos_fontx == 0)
+	printf_warning ("\nReport bug! lpos=%d, start=%d, len=%d, llen=%d, plen=%d, section=%d\n", lpos, start, len, llen, plen, section);
 
       /* Fill up the rest of the line with spaces.  */
       for (; i < start + len; i++)
@@ -1346,10 +1359,9 @@ get_cmdline_obsolete (struct get_cmdline_arg cmdline)
 int
 get_cmdline (void)
 {
-  unsigned long old_cursor;
+  unsigned long old_cursor = cursor_state;
   int ret;
-  old_cursor = setcursor (cursor_state | 1);
-  
+
   /* Because it is hard to deal with different conditions simultaneously,
      less functional cases are handled here. Assume that TERM_NO_ECHO
      implies TERM_NO_EDIT.  */
@@ -1357,7 +1369,8 @@ get_cmdline (void)
     {
       unsigned char *p = get_cmdline_str.cmdline;
       unsigned int c;
-      
+
+      setcursor (cursor_state | 1);
       /* Make sure that MAXLEN is not too large.  */
       if (get_cmdline_str.maxlen > MAX_CMDLINE)
 		get_cmdline_str.maxlen = MAX_CMDLINE;
@@ -1906,6 +1919,14 @@ debug_sleep(int l_debug_boot, int line, char *file)
   }
 }
 
+#ifdef DEBUG_TIME
+inline void debug_time(const int line,const char*file)
+{
+	unsigned long date, time;
+	get_datetime(&date, &time);
+	printf("%s[%d]:%02X:%02X:%02X\n",file,line,(char)(time >> 24),(char)(time >> 16),(char)(time>>8));
+}
+#endif
 void
 gotoxy (int x, int y)
 {

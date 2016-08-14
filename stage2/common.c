@@ -345,7 +345,14 @@ init_bios_info (void)
   unsigned long cont, memtmp, addr;
   unsigned long drive;
   unsigned long force_pxe_as_boot_device;
+  unsigned long use_fixed_boot_device = boot_drive;
+  unsigned long use_lba1sector;
 
+  if (use_fixed_boot_device != -1)
+  {
+	/* save boot device info in it */
+	use_fixed_boot_device = ((unsigned short)boot_drive | (install_partition & 0x00FF0000)); 
+  }
   is64bit = check_64bit_and_PAE ();
 
   /* initialize mem alloc array */
@@ -355,7 +362,8 @@ init_bios_info (void)
   malloc_array_start = (struct malloc_array *)mem_alloc_array_start + 10;
   malloc_array_start->addr = free_mem_start + 0x400000;
   malloc_array_start->next = (struct malloc_array *)&free_mem_end;
-
+  use_lba1sector = debug_boot & 2;
+  debug_boot &= 1;
   /*
    *  Get information from BIOS on installed RAM.
    */
@@ -616,7 +624,7 @@ redo_dos_geometry:
 		goto failed_dos_boot_drive;
 	}
 succeeded_dos_boot_drive:
-	((char *)&install_partition)[2] = (char)j;
+	((unsigned short *)&install_partition)[1] = (unsigned char)j;
 	boot_drive = (unsigned char)dos_drive_geometry;
 
 	/* set geometry_ok flag for dos boot drive */
@@ -633,11 +641,13 @@ succeeded_dos_boot_drive:
 		hd_geom[0].sectors = ((unsigned char *)&dos_drive_geometry)[2];
 	}
     }
-    else if (! fb_status) // if not boot from fbinst
+    else if (use_fixed_boot_device == -1)
 //	 if (! ((*(char *)0x8211) & 2)) // if not booting as a Linux kernel
     {
 	unsigned long j, k;
 
+	boot_drive = *(unsigned char *)0x8206;
+	((unsigned short *)&install_partition)[1] = *(unsigned char *)0x8207;
 	/* check if there is a valid volume-boot-sector at 0x7C00. */
 	if (probe_bpb((struct master_and_dos_boot_sector *)0x7C00))
 		goto failed_dos_boot_drive;
@@ -651,6 +661,9 @@ succeeded_dos_boot_drive:
 	//boot_drive = j;
 	dos_drive_geometry = k;
 	goto redo_dos_geometry;
+    }
+    else
+    {
     }
 failed_dos_boot_drive:
 
@@ -834,6 +847,13 @@ set_root:
 	install_partition = 0xFFFFFF;
   }
 
+  if (use_fixed_boot_device != -1)
+  {
+	/* force boot device to be the saved value. */
+	boot_drive = (unsigned short)use_fixed_boot_device;
+	install_partition = use_fixed_boot_device | 0xFFFF;
+  }
+
   /* Set root drive and partition.  */
   saved_drive = boot_drive;
   saved_partition = install_partition;
@@ -876,13 +896,22 @@ set_root:
 	}
   }
 #endif
-  if (debug_boot)
-  grub_printf("\rInitialize variable space...\n");
+  if (debug_boot) grub_printf("\rInitialize variable space...\n");
+
   VARIABLE_BASE_ADDR = 0x45000;
   memset(ADDR_RET_STR,0,0x200);
   run_line("set ?_BOOT=%@root%",1);
   QUOTE_CHAR = '\"';
-//  builtin_cmd("set","?_Boot=",1);/*Initialize variable space*/
+  if (use_lba1sector && run_line("geometry --lba1sector",1))
+  {
+    int chk;
+    printf("\nYou pressed the `S` key, and \"geometry --lba1sector\" is successfully executed\n  for drive 0x%X.This will Slow but Secure disk read for Buggy BIOS.\n",boot_drive);
+    while((chk = run_line("pause --wait=5",1)))
+    {
+       chk &= 0xdf;
+       if (chk != 'S') break;
+    }
+  }
 
 #ifdef SUPPORT_GRAPHICS
 extern int font_func (char *, int);

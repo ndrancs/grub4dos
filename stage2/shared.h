@@ -767,6 +767,11 @@ extern int map_func (char *arg, int flags);
 #define DEBUG_SLEEP {debug_sleep(debug_boot,__LINE__,__FILE__);}
 extern inline void debug_sleep(int debug_boot, int line, char *file);
 
+#ifdef DEBUG_TIME
+#define PRINT_DEBUG_INFO debug_time(__LINE__,__FILE__);
+extern inline void debug_time(const int line,const char*file);
+#endif
+
 extern void hexdump(grub_u64_t,char*,int);
 extern int builtin_cmd (char *cmd, char *arg, int flags);
 extern long realmode_run(long regs_ptr);
@@ -970,6 +975,8 @@ extern unsigned char min_cdrom_id;	/* MINIMUM ATAPI CDROM DRIVE NUMBER */
 extern unsigned long cdrom_drive;
 extern unsigned long force_cdrom_as_boot_device;
 extern unsigned long ram_drive;
+extern unsigned long long md_part_base;
+extern unsigned long long md_part_size;
 extern unsigned long long rd_base;
 extern unsigned long long rd_size;
 extern unsigned long long saved_mem_higher;
@@ -1183,6 +1190,16 @@ void stop_floppy (void);
 #define BUILTIN_USER_PROG	(1 << 8)
 #define BUILTIN_NO_DECOMPRESSION (1 << 9)
 
+#define BAT_SIGN 0x54414221UL
+
+/* The table for a psp_end*/
+typedef struct {
+	unsigned long len;
+	unsigned long proglen;
+	unsigned long arg;
+	unsigned long path;
+	char filename[0];
+} __attribute__ ((packed)) psp_info_t;
 
 /* The table for a builtin.  */
 struct builtin
@@ -1241,6 +1258,8 @@ void enter_cmdline (char *heap, int forever);
 //void grub_printf (const char *format,...);
 
 #define grub_printf(...) grub_sprintf(NULL, __VA_ARGS__)
+#define printf_errinfo(...) grub_sprintf((char*)2, __VA_ARGS__)
+#define printf_warning(...) grub_sprintf((char*)1, __VA_ARGS__)
 int grub_sprintf (char *buffer, const char *format, ...);
 int grub_tolower (int c);
 int grub_isspace (int c);
